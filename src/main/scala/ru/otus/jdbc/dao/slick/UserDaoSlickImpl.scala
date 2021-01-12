@@ -1,7 +1,6 @@
 package ru.otus.jdbc.dao.slick
 
 
-
 import ru.otus.jdbc.model.{Role, User}
 import slick.dbio.Effect
 import slick.jdbc.PostgresProfile.api._
@@ -11,49 +10,82 @@ import java.util.UUID
 import scala.concurrent.{ExecutionContext, Future}
 
 
-
-
 class UserDaoSlickImpl(db: Database)(implicit ec: ExecutionContext) {
+
   import UserDaoSlickImpl._
 
   def getUser(userId: UUID): Future[Option[User]] = {
     val res = for {
-      user  <- users.filter(user => user.id === userId).result.headOption
+      user <- users.filter(user => user.id === userId).result.headOption
       roles <- usersToRoles.filter(_.usersId === userId).map(_.rolesCode).result.map(_.toSet)
     } yield user.map(_.toUser(roles))
 
     db.run(res)
   }
 
-  def createUser(user: User): Future[User] = ???
+  def createUser(user: User): Future[User] = {
+    val insertAction = for {
+      userId <- (users returning users.map(_.id)) += UserRow(None, user.firstName, user.lastName, user.age)
+      _ <- usersToRoles ++= user.roles.map(userId -> _)
+    } yield user.copy(id=Some(userId))
+    db.run(insertAction.transactionally)
+  }
 
   def updateUser(user: User): Future[Unit] = {
     user.id match {
       case Some(userId) =>
-        val updateUser = users
-            .filter(_.id === userId)
-            .map(u => (u.firstName, u.lastName, u.age))
-            .update((user.firstName, user.lastName, user.age))
+        getUser(userId).flatMap {
+          case Some(_) => // пользователь имеется в базе - делаем update
+            val updateUser = users
+              .filter(_.id === userId)
+              .map(u => (u.firstName, u.lastName, u.age))
+              .update((user.firstName, user.lastName, user.age))
 
-        val deleteRoles = usersToRoles.filter(_.usersId === userId).delete
-        val insertRoles = usersToRoles ++= user.roles.map(userId -> _)
+            val deleteRoles = usersToRoles.filter(_.usersId === userId).delete
+            val insertRoles = usersToRoles ++= user.roles.map(userId -> _)
 
-        val action = updateUser >> deleteRoles >> insertRoles >> DBIO.successful(())
+            val action = updateUser >> deleteRoles >> insertRoles >> DBIO.successful(())
 
-        db.run(action)
-      case None => Future.successful(())
+            db.run(action.transactionally)
+
+          case None => // пользователь отсутсвует в базе - создаем его
+            createUser(user).map(_ => ())
+        }
+      case None =>
+        createUser(user).map(_ => ())
     }
   }
 
-  def deleteUser(userId: UUID): Future[Option[User]] = ???
+  def deleteUser(userId: UUID): Future[Option[User]] = {
+    getUser(userId).flatMap {
+      case Some(user) =>
+        val deleteRoles = usersToRoles.filter(_.usersId===user.id).delete
+        val deleteUser = users.filter(_.id===user.id).delete
+        db.run(deleteRoles >> deleteUser).map(_ => Some(user))
+      case _ => Future(None)
+    }
 
-  private def findByCondition(condition: Users => Rep[Boolean]): Future[Vector[User]] = ???
+  }
 
-  def findByLastName(lastName: String): Future[Seq[User]] = ???
+  private def findByCondition(condition: Users => Rep[Boolean]): Future[Vector[User]] = {
+    val action = for {
+      userSeq <- users.filter(condition).result
+      roles <- usersToRoles.filter(_.usersId in users.filter(condition).map(_.id)).result
+    } yield userSeq.map { userRow =>
+      val userRoles = roles.filter(_._1 == userRow.id.get).map(_._2).toSet
+      userRow.toUser(userRoles)
+    }.toVector
+    db.run(action)
+  }
 
-  def findAll(): Future[Seq[User]] = ???
+  def findByLastName(lastName: String): Future[Seq[User]] = findByCondition(_.lastName === lastName)
 
-  private[slick] def deleteAll(): Future[Unit] = ???
+  def findAll(): Future[Seq[User]] = findByCondition(_ => true)
+
+
+  def deleteAll(): Future[Unit] = {
+    db.run(usersToRoles.delete >> users.delete).map(_=>())
+  }
 }
 
 object UserDaoSlickImpl {
@@ -64,19 +96,19 @@ object UserDaoSlickImpl {
       case Role.Admin => "admin"
     },
     {
-        case "reader"  => Role.Reader
-        case "manager" => Role.Manager
-        case "admin"   => Role.Admin
+      case "reader" => Role.Reader
+      case "manager" => Role.Manager
+      case "admin" => Role.Admin
     }
   )
 
 
   case class UserRow(
-      id: Option[UUID],
-      firstName: String,
-      lastName: String,
-      age: Int
-  ) {
+                      id: Option[UUID],
+                      firstName: String,
+                      lastName: String,
+                      age: Int
+                    ) {
     def toUser(roles: Set[Role]): User = User(id, firstName, lastName, age, roles)
   }
 
@@ -85,10 +117,10 @@ object UserDaoSlickImpl {
   }
 
   class Users(tag: Tag) extends Table[UserRow](tag, "users") {
-    val id        = column[UUID]("id", O.PrimaryKey, O.AutoInc)
+    val id = column[UUID]("id", O.PrimaryKey, O.AutoInc)
     val firstName = column[String]("first_name")
-    val lastName  = column[String]("last_name")
-    val age       = column[Int]("age")
+    val lastName = column[String]("last_name")
+    val age = column[Int]("age")
 
     val * = (id.?, firstName, lastName, age).mapTo[UserRow]
   }
@@ -96,7 +128,7 @@ object UserDaoSlickImpl {
   val users: TableQuery[Users] = TableQuery[Users]
 
   class UsersToRoles(tag: Tag) extends Table[(UUID, Role)](tag, "users_to_roles") {
-    val usersId   = column[UUID]("users_id")
+    val usersId = column[UUID]("users_id")
     val rolesCode = column[Role]("roles_code")
 
     val * = (usersId, rolesCode)

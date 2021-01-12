@@ -1,7 +1,7 @@
 package ru.otus.jdbc.homework
 
 
-import com.dimafeng.testcontainers.{ForAllTestContainer, PostgreSQLContainer}
+import com.dimafeng.testcontainers.{ForAllTestContainer, ForEachTestContainer, PostgreSQLContainer}
 import org.flywaydb.core.Flyway
 import org.scalacheck.Arbitrary._
 import org.scalacheck.{Arbitrary, Gen}
@@ -13,12 +13,12 @@ import org.scalatestplus.scalacheck.ScalaCheckDrivenPropertyChecks
 import ru.otus.jdbc.dao.slick.UserDaoSlickImpl
 import ru.otus.jdbc.model.{Role, User}
 import slick.jdbc.JdbcBackend.Database
-
 import java.util.UUID
+
 import scala.concurrent.ExecutionContext.Implicits.global
 
 class UserDaoSlickImplTest extends AnyFreeSpec
-  with ScalaCheckDrivenPropertyChecks with ScalaFutures  with ForAllTestContainer {
+  with ScalaCheckDrivenPropertyChecks with ScalaFutures  with ForEachTestContainer {
   override val container: PostgreSQLContainer = PostgreSQLContainer()
 
   var db: Database = _
@@ -71,7 +71,7 @@ class UserDaoSlickImplTest extends AnyFreeSpec
           val createdUser = dao.createUser(user1).futureValue
           val toUpdate = user2.copy(id = createdUser.id)
 
-          dao.updateUser(toUpdate)
+          dao.updateUser(toUpdate).futureValue
 
           dao.getUser(toUpdate.id.get).futureValue shouldBe Some(toUpdate)
           createdUsers.foreach { u => dao.getUser(u.id.get).futureValue shouldBe Some(u)
@@ -111,6 +111,7 @@ class UserDaoSlickImplTest extends AnyFreeSpec
     "findAll" in {
       forAll { users: Seq[User] =>
         val dao = new UserDaoSlickImpl(db)
+        dao.deleteAll().futureValue
         val createdUsers = users.map(dao.createUser(_).futureValue)
 
         dao.findAll().futureValue.toSet shouldBe createdUsers.toSet
